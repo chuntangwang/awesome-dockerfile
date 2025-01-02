@@ -1,0 +1,369 @@
+FROM --platform=${BUILDPLATFORM:-linux/amd64} ubuntu:20.04 AS builder
+
+# common env
+ENV MAKEFLAGS="-j4"
+
+RUN \
+  echo "**** install build packages ****" && \
+  apt-get update && \
+  DEBIAN_FRONTEND="noninteractive" apt-get install -y \
+    autoconf \
+    bzip2 \
+    clang \
+    curl \
+    diffutils \
+    docbook2x \
+    doxygen \
+    g++ \
+    gcc \
+    git \
+    gperf \
+    gtk-doc-tools \
+    libbz2-dev \
+    libgcc-10-dev \
+    libglib2.0-dev \
+    libgnutls28-dev \
+    libtool \
+    liblzma-dev \
+    make \
+    nasm \
+    perl \
+    python3-venv \
+    pkg-config \
+    ragel \
+    tcl-dev \
+    xxd \
+    yasm \
+    zlib1g-dev
+
+# -----------------------------------------------------------------------------
+# build tools
+
+ENV PATH=/pyenv/bin:$PATH
+RUN python3 -m venv /pyenv && chmod +x /pyenv/bin/activate
+RUN \
+pip install -U --no-cache-dir pip setuptools wheel && \
+pip install --no-cache-dir meson cmake ninja
+
+RUN \
+  echo "**** grabbing automake ****" && \
+  mkdir -p /tmp/automake && \
+  curl -Lf https://mirror.ossplanet.net/gnu/automake/automake-1.16.5.tar.xz | \
+  tar -xJ --strip-components=1 -C /tmp/automake
+RUN \
+  echo "**** compiling automake ****" && \
+  cd /tmp/automake && \
+  ./configure --prefix=/usr && \
+  make && make install
+
+# -----------------------------------------------------------------------------
+# compile 3rd party libs
+
+RUN \
+  echo "**** grabbing openssl ****" && \
+  mkdir -p /tmp/openssl && \
+  curl -Lf https://github.com/openssl/openssl/archive/OpenSSL_1_1_1w.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/openssl
+RUN \
+  echo "**** compiling openssl ****" && \
+  cd /tmp/openssl && \
+  ./config -static no-shared no-tests && \
+  make && make install
+
+RUN \
+  echo "**** grabbing aom ****" && \
+  mkdir -p /tmp/aom && \
+  git clone --branch v3.8.1 --depth 1 https://aomedia.googlesource.com/aom /tmp/aom
+RUN \
+  echo "**** compiling aom ****" && \
+  cd /tmp/aom && \
+  rm -rf CMakeCache.txt CMakeFiles && \
+  mkdir -p aom_build && \
+  cd aom_build && \
+  cmake -DBUILD_SHARED_LIBS=OFF .. && \
+  make && make install
+
+RUN \
+  echo "**** grabbing fdk-aac ****" && \
+  mkdir -p /tmp/fdk-aac && \
+  curl -Lf https://github.com/mstorsjo/fdk-aac/archive/v2.0.3.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/fdk-aac
+RUN \
+  echo "**** compiling fdk-aac ****" && \
+  cd /tmp/fdk-aac && \
+  autoreconf -fiv && \
+  ./configure --enable-static --disable-shared && \
+  make && make install
+
+RUN \
+  echo "**** grabbing libexpat ****" && \
+  mkdir -p /tmp/libexpat && \
+  curl -Lf https://github.com/libexpat/libexpat/archive/R_2_6_1.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/libexpat
+RUN \
+  echo "**** compiling libexpat ****" && \
+  cd /tmp/libexpat/expat && \
+  ./buildconf.sh && \
+  ./configure --enable-static --disable-shared && \
+  make && make install
+
+# -----------------------------------------------------------------------------
+# keep order
+
+RUN \
+  echo "**** grabbing libpng ****" && \
+  mkdir -p /tmp/libpng && \
+  curl -Lf https://downloads.sourceforge.net/project/libpng/libpng16/1.6.43/libpng-1.6.43.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/libpng
+RUN \
+  echo "**** compiling libpng ****" && \
+  cd /tmp/libpng && \
+  ./configure --enable-static --disable-shared && \
+  make && make install
+
+RUN \
+  echo "**** grabbing freetype ****" && \
+  mkdir -p /tmp/freetype && \
+  curl -Lf https://downloads.sourceforge.net/project/freetype/freetype2/2.13.2/freetype-2.13.2.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/freetype
+RUN \
+  echo "**** compiling freetype ****" && \
+  cd /tmp/freetype && \
+  ./configure --enable-static --disable-shared --with-harfbuzz=no --with-brotli=no && \
+  make && make install
+
+RUN \
+  echo "**** grabbing graphite ****" && \
+  mkdir -p /tmp/graphite && \
+  curl -Lf https://github.com/silnrsi/graphite/archive/1.3.14.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/graphite
+RUN \
+  echo "**** compiling graphite ****" && \
+  cd /tmp/graphite && \
+  mkdir -p build && \
+  cd build && \
+  cmake -G "Unix Makefiles" -DBUILD_SHARED_LIBS=OFF -DGRAPHITE2_NFILEFACE=ON .. && \
+  make && make install
+
+# depends on libpng, freetype
+RUN \
+  echo "**** grabbing fontconfig ****" && \
+  mkdir -p /tmp/fontconfig && \
+  curl -Lf https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz | \
+  tar -xJ --strip-components=1 -C /tmp/fontconfig
+RUN \
+  echo "**** compiling fontconfig ****" && \
+  cd /tmp/fontconfig && \
+  meson setup build --reconfigure -Ddefault_library=static -Dtests=disabled -Dtools=disabled && \
+  meson compile -C build && \
+  meson install -C build
+
+RUN \
+  echo "**** grabbing pixman ****" && \
+  mkdir -p /tmp/pixman && \
+  curl -Lf https://www.cairographics.org/releases/pixman-0.43.4.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/pixman
+RUN \
+  echo "**** compiling pixman ****" && \
+  cd /tmp/pixman && \
+  meson setup build --reconfigure -Ddefault_library=static -Dlibpng=enabled -Dtests=disabled && \
+  meson compile -C build && \
+  meson install -C build
+
+# depends on pixman, fontconfig, freetype, libpng
+RUN \
+  echo "**** grabbing cairo ****" && \
+  mkdir -p /tmp/cairo && \
+  curl -Lf https://www.cairographics.org/releases/cairo-1.18.0.tar.xz | \
+  tar -xJ --strip-components=1 -C /tmp/cairo
+RUN \
+  echo "**** compiling cairo ****" && \
+  cd /tmp/cairo && \
+  meson setup build --reconfigure -Ddefault_library=static -Dtests=disabled && \
+  meson compile -C build && \
+  meson install -C build
+
+# depends on cairo, fontconfig
+RUN \
+  echo "**** grabbing harfbuzz ****" && \
+  mkdir -p /tmp/harfbuzz && \
+  curl -Lf https://github.com/harfbuzz/harfbuzz/archive/8.3.0.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/harfbuzz
+RUN \
+  echo "**** compiling harfbuzz ****" && \
+  cd /tmp/harfbuzz && \
+  meson setup build --reconfigure -Ddefault_library=static -Dgraphite2=enabled -Dfreetype=enabled -Dtests=disabled -Ddocs=disabled -Dutilities=disabled && \
+  meson compile -C build && \
+  meson install -C build
+
+# -----------------------------------------------------------------------------
+
+RUN \
+  echo "**** grabbing fribidi ****" && \
+  mkdir -p /tmp/fribidi && \
+  curl -Lf https://github.com/fribidi/fribidi/archive/v1.0.13.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/fribidi
+RUN \
+  echo "**** compiling fribidi ****" && \
+  cd /tmp/fribidi && \
+  ./autogen.sh && \
+  ./configure --enable-static --disable-shared && \
+  make -j 1 && \
+  make install
+
+RUN \
+  echo "**** grabbing lame ****" && \
+  mkdir -p /tmp/lame && \
+  curl -Lf http://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/lame
+RUN \
+  echo "**** compiling lame ****" && \
+  cd /tmp/lame && \
+  cp /usr/share/automake-1.16/config.guess config.guess && \
+  cp /usr/share/automake-1.16/config.sub config.sub && \
+  ./configure --disable-frontend --enable-static --enable-nasm --disable-shared && \
+  make && make install
+
+RUN \
+  echo "**** grabbing libass ****" && \
+  mkdir -p /tmp/libass && \
+  curl -Lf https://github.com/libass/libass/archive/0.17.1.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/libass
+RUN \
+  echo "**** compiling libass ****" && \
+  cd /tmp/libass && \
+  ./autogen.sh && \
+  ./configure --enable-static --disable-shared && \
+  make && make install
+
+# RUN \
+#   echo "**** grabbing ogg ****" && \
+#   mkdir -p /tmp/ogg && \
+#   curl -Lf http://downloads.xiph.org/releases/ogg/libogg-1.3.5.tar.gz | \
+#   tar -xz --strip-components=1 -C /tmp/ogg
+# RUN \
+#   echo "**** compiling ogg ****" && \
+#   cd /tmp/ogg && \
+#   ./configure --enable-static --disable-shared && \
+#   make && make install
+
+# RUN \
+#   echo "**** grabbing opus ****" && \
+#   mkdir -p /tmp/opus && \
+#   curl -Lf https://downloads.xiph.org/releases/opus/opus-1.4.tar.gz | \
+#   tar -xz --strip-components=1 -C /tmp/opus
+# RUN \
+#   echo "**** compiling opus ****" && \
+#   cd /tmp/opus && \
+#   autoreconf -fiv && \
+#   ./configure --enable-static --disable-shared && \
+#   make && make install
+
+# -----------------------------------------------------------------------------
+
+RUN \
+  echo "**** grabbing srt ****" && \
+  mkdir -p /tmp/srt && \
+  curl -Lf https://github.com/Haivision/srt/archive/v1.5.3.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/srt
+RUN \
+  echo "**** compiling srt ****" && \
+  cd /tmp/srt && \
+  mkdir -p build && cd build && \
+  cmake -DENABLE_STATIC=ON -DENABLE_SHARED=OFF -DOPENSSL_USE_STATIC_LIBS=ON -DUSE_OPENSSL_PC=ON -DENABLE_APPS=OFF .. && \
+  make && make install
+
+RUN \
+  echo "**** grabbing libxml2 ****" && \
+  mkdir -p /tmp/libxml2 && \
+  curl -Lf https://github.com/GNOME/libxml2/archive/v2.12.5.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/libxml2
+RUN \
+  echo "**** compiling libxml2 ****" && \
+  cd /tmp/libxml2 && \
+  ACLOCAL_PATH=/usr/share/aclocal ./autogen.sh && \
+  ./configure --enable-static --disable-shared --with-python=no && \
+  make && make install
+
+# -----------------------------------------------------------------------------
+
+RUN \
+  echo "**** grabbing x264 ****" && \
+  mkdir -p /tmp/x264 && \
+  curl -Lf https://code.videolan.org/videolan/x264/-/archive/master/x264-stable.tar.bz2 | \
+  tar -jx --strip-components=1 -C /tmp/x264
+RUN \
+  echo "**** compiling x264 ****" && \
+  cd /tmp/x264 && \
+  ./configure --disable-cli --enable-static --enable-pic && \
+  make && make install
+
+RUN \
+  echo "**** grabbing x265 ****" && \
+  mkdir -p /tmp/x265 && \
+  curl -Lf https://bitbucket.org/multicoreware/x265_git/downloads/x265_3.5.tar.gz | \
+  tar -xz --strip-components=1 -C /tmp/x265
+RUN \
+  echo "**** compiling x265 ****" && \
+  sed -i 's/-DLINKED_12BIT=ON/-DLINKED_12BIT=ON -DENABLE_SHARED=OFF/g' /tmp/x265/build/linux/multilib.sh && \
+  cd /tmp/x265/build/linux && \
+  ./multilib.sh && \
+  make -C 8bit install
+
+# -----------------------------------------------------------------------------
+# ENV FFMPEG_PACKAGE="ffmpeg-6.1.1"
+
+# COPY ${FFMPEG_PACKAGE}.tar.gz /tmp/
+
+# RUN \
+#   echo "**** untar ffmpeg ****" && \
+#   mkdir -p /tmp/ffmpeg && \
+#   tar -xzf /tmp/${FFMPEG_PACKAGE}.tar.gz --strip-components=1 -C /tmp/ffmpeg
+
+ENV FFMPEG_TAG="n6.1.1"
+
+RUN \
+echo "**** grabbing ffmpeg ****" && \
+mkdir -p /tmp/ffmpeg && \
+git clone --branch $FFMPEG_TAG --depth 1 https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg
+
+RUN \
+echo "**** configure ffmpeg ****" && \
+cd /tmp/ffmpeg && \
+  ./configure \
+  --enable-pthreads \
+  --extra-libs=-lpthread \
+  --pkg-config-flags=--static \
+  --enable-gpl \
+  --enable-nonfree \
+  --enable-postproc \
+  --enable-bzlib \
+  --enable-zlib \
+  --enable-libx264 \
+  --enable-libmp3lame \
+  --enable-libfdk-aac \
+  --enable-libxml2 \
+  --enable-demuxer=dash \
+  --enable-openssl \
+  --enable-protocol=tls \
+  --enable-protocol=rtmps \
+  --enable-filter=drawtext \
+  --enable-libfreetype \
+  --enable-libfontconfig \
+  --enable-libass \
+  --enable-libsrt \
+  --enable-libx265 && \
+make && make install
+
+RUN rm -rf /tmp/*
+
+# -----------------------------------------------------------------------------
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} ubuntu:20.04
+
+COPY --from=builder /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+
+# Test the version of binaries.
+RUN ldd /usr/local/bin/ffmpeg && /usr/local/bin/ffmpeg -version
+
+ENTRYPOINT ["/usr/local/bin/ffmpeg"]

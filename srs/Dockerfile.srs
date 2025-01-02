@@ -1,0 +1,19 @@
+FROM ffmpeg-static:6.1.1 AS ffmpeg
+
+# -----------------------------------------------------------------------------
+
+FROM ossrs/srs:v6.0.158
+
+RUN apt-get update && DEBIAN_FRONTEND="noninteractive" apt-get install -y tcpdump
+
+# FFMPEG 6.1.1
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/srs/objs/ffmpeg/bin/ffmpeg
+
+# Test the version of binaries.
+RUN ldd /usr/local/srs/objs/ffmpeg/bin/ffmpeg && \
+    /usr/local/srs/objs/ffmpeg/bin/ffmpeg -version
+
+# Default workdir and command.
+WORKDIR /usr/local/srs
+ENV SRS_DAEMON=off SRS_IN_DOCKER=on
+CMD ["./objs/srs", "-c", "conf/docker.conf"]

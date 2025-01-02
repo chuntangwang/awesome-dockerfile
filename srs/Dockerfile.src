@@ -1,0 +1,64 @@
+FROM --platform=${TARGETPLATFORM:-linux/amd64} ffmpeg-static:6.1.1 AS ffmpeg
+
+# -----------------------------------------------------------------------------
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} ossrs/srs:ubuntu20 AS builder
+
+# Ref: https://github.com/ossrs/srs/blob/develop/Dockerfile
+#      https://github.com/ossrs/srs/blob/develop/.github/workflows/release.yml
+
+RUN echo "**** install build packages ****" && \
+  apt-get update && \
+  DEBIAN_FRONTEND="noninteractive" apt-get install -y \
+  git
+  # another build packages that already included in ossrs/srs:ubuntu20
+  # gcc make g++ patch unzip perl libasan5 curl
+
+ENV SRS_BRANCH="6.0release"
+
+RUN \
+echo "**** grabbing srs ****" && \
+mkdir -p /tmp/srs && \
+git clone --branch $SRS_BRANCH --depth 1 https://github.com/ossrs/srs.git /tmp/srs
+
+WORKDIR /tmp/srs/trunk
+
+RUN \
+echo "**** print srs version ****" && \
+VFILE="/tmp/srs/trunk/src/core/srs_core_version6.hpp" && \
+SRS_X=$(cat $VFILE |grep VERSION_MAJOR |awk '{print $3}') && \
+SRS_Y=$(cat $VFILE |grep VERSION_MINOR |awk '{print $3}') && \
+SRS_Z=$(cat $VFILE |grep VERSION_REVISION |awk '{print $3}') && \
+SRS_XYZ=$SRS_X.$SRS_Y.$SRS_Z && \
+echo "SRS_XYZ=$SRS_XYZ"
+
+# CONFARGS: we can check default options in /trunk/auto/options.sh
+ENV CONFARGS='--sanitizer=off --gb28181=on' MAKEARGS="-j4"
+
+# Build and install SRS.
+RUN \
+echo "**** build srs ****" && \
+./configure ${CONFARGS} && make ${MAKEARGS} && make install
+
+# -----------------------------------------------------------------------------
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} ubuntu:20.04
+
+# Expose ports for streaming @see https://github.com/ossrs/srs#ports
+EXPOSE 1935 1985 8080 5060 9000 8000/udp 10080/udp
+
+# FFMPEG 6.1.1
+COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/srs/objs/ffmpeg/bin/ffmpeg
+# SRS binary, config files and srs-console.
+COPY --from=builder /usr/local/srs /usr/local/srs
+
+# Test the version of binaries.
+RUN ldd /usr/local/srs/objs/ffmpeg/bin/ffmpeg && \
+    /usr/local/srs/objs/ffmpeg/bin/ffmpeg -version && \
+    ldd /usr/local/srs/objs/srs && \
+    /usr/local/srs/objs/srs -v
+
+# Default workdir and command.
+WORKDIR /usr/local/srs
+ENV SRS_DAEMON=off SRS_IN_DOCKER=on
+CMD ["./objs/srs", "-c", "conf/docker.conf"]
